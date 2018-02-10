@@ -63,7 +63,7 @@ void split_to_labels(struct label *labels, char *domain_name, short token_count)
     tokens[i++] = token;
     token = strtok(NULL, ".");
   }
-   // iterate through array of tokens and assign lengths
+
   int j = 0;
   for (j = 0; j < i; j++) {
     char *token = tokens[j];
@@ -71,6 +71,7 @@ void split_to_labels(struct label *labels, char *domain_name, short token_count)
     labels[j].domain_name = token;
   }
 };
+
 
 char *label_to_str (struct label label) {
   char *label_str = malloc(65);
@@ -98,13 +99,6 @@ struct question build_dns_question() {
   };
 };
 
-
-DNS_MESSAGE build_dns_message() {
-  return (DNS_MESSAGE) {
-    .header = build_dns_header(),
-    .question = build_dns_question(),
-  };
-};
 
 int main(int argc, char *argv[]) {
   if (argc != 3) {
@@ -172,9 +166,27 @@ int main(int argc, char *argv[]) {
   }
 
   socklen_t socket_length = sizeof destination;
-  if(recvfrom(sock, buffer, buffer_ptr - buffer, 0, (struct sockaddr*)&destination, &socket_length) < 0) {
+  if(recvfrom(sock, buffer, 512, 0, (struct sockaddr*)&destination, &socket_length) < 0) {
     printf("\nError receiving packet: %s\n", strerror(errno));
     exit(EXIT_FAILURE);
+  }
+
+  // parse header
+  struct header *dns_header_ptr = (struct header*) buffer;
+
+  // point past header, name, and query to answer records
+  char *answer = &buffer[buffer_ptr - buffer];
+
+  // not sure how many answers will come back
+  struct resource_record answers[10];
+
+  for (int i = 0; i < ntohs(dns_header_ptr->ancount); i++) {
+    // parse answer records, for each record print the name
+    // by parsing until we hit a \0 character, then serialize
+    // the rest of the defined resource record data into the
+    // resource_record struct, rdlength should be 4 and the
+    // final data should be an ipv4 address that we need to
+    // use inet_ntoa to convert back to print.
   }
 
   close(sock); /* close the socket */
