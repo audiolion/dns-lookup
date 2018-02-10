@@ -38,7 +38,6 @@ struct header {
 
 
 struct question {
-  unsigned char *name;// domain name in octet format, no padding is used to fill, zero length octet to terminate
   unsigned short qtype;
   unsigned short qclass; // all valid resource record types, with additional general codes
 };
@@ -51,7 +50,7 @@ typedef struct {
 
 
 struct label {
-  unsigned short length;
+  char length;
   char *domain_name;
 };
 
@@ -73,78 +72,37 @@ void split_to_labels(struct label *labels, char *domain_name, short token_count)
   }
 };
 
-int  make_dns_query_domain(char *domain)
-{
-    char out[256];
-    char *p = domain;
-    char *pout = &out[0];
-    while (*p)
-    {
-        int size = 0;
-        char *pdomain = p;
-        while (*pdomain && *pdomain != '.')
-        {
-            size++;
-            pdomain++;
-        }
-        pout[0] = size;
-        pout ++;
-        strncpy(pout, p, size);
-        pout += size;
-        p = pdomain;
-        if ('.' == *p)
-        {
-            p++;
-        }
-    }
-    *(pout) = 0;
-    memcpy(domain, &out[0], pout - &out[0] + 1);
-    return pout - &out[0] + 1;
-}
-
-
 char *label_to_str (struct label label) {
-  size_t length = 0;
-  length = snprintf(NULL, length, "%hu%s", label.length, label.domain_name);
-
-  // add one to length to null terminate the string
-  char *label_str = calloc(1, length + 1);
-  if (!label_str) {
-    fprintf(stderr, "error: memory allocation failed");
-    return NULL;
-  }
-
-  size_t write_length = snprintf(label_str, length + 1, "%hu%s", label.length, label.domain_name);
-  if(write_length > length) {
-    fprintf(stderr, "error: snprintf truncated result.");
-    return NULL;
-  }
+  char *label_str = malloc(65);
+  label_str[0] = label.length;
+  strncpy(&label_str[1], label.domain_name, label.length);
+  label_str[label.length + 1] = '\0';
   return label_str;
 };
 
 
 struct header build_dns_header() {
   return (struct header) {
-    .id = (unsigned short) htons(1),
-    .rd = 1,
+    .id = (unsigned short) htons(rand()),
+    .qr = 0,
+    .rd = 0,
     .qdcount = htons(1),
   };
 };
 
 
-struct question build_dns_question(char *qname) {
+struct question build_dns_question() {
   return (struct question) {
-    .name = (unsigned char *) qname,
     .qtype = htons(1), // A record == 1
     .qclass = htons(1), // Internet == 1
   };
 };
 
 
-DNS_MESSAGE build_dns_message(char *qname) {
+DNS_MESSAGE build_dns_message() {
   return (DNS_MESSAGE) {
     .header = build_dns_header(),
-    .question = build_dns_question(qname),
+    .question = build_dns_question(),
   };
 };
 
@@ -157,9 +115,6 @@ int main(int argc, char *argv[]) {
   time_t t;
   srand(time(&t));
 
-  char NAME_LENGTH = strlen(argv[1]);
-  char name_to_query[NAME_LENGTH];
-  strncpy(name_to_query, argv[1], NAME_LENGTH);
   char *dns_ip_address = argv[2];
   int sock;
   sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -172,15 +127,13 @@ int main(int argc, char *argv[]) {
   struct sockaddr_in destination;
   memset(&destination, 0, sizeof destination);
 
-  /* The address is IPv4 */
   destination.sin_family = AF_INET;
-
-   /* IPv4 adresses is a uint32_t, convert a string representation of the octets to the appropriate value */
   destination.sin_addr.s_addr = inet_addr(dns_ip_address);
-
-  /* sockets are unsigned shorts, htons(x) ensures x is in network byte order, set the port to 53 per rfc 1035 */
   destination.sin_port = htons(53);
 
+  int query_name_length = strlen(argv[1]);
+  char name_to_query[query_name_length];
+  strncpy(name_to_query, argv[1], query_name_length);
   const char DELIMITER = '.';
   short token_count = 1;
   for (int i = 0; i < strlen(name_to_query); i++) {
@@ -194,43 +147,35 @@ int main(int argc, char *argv[]) {
   // max size of qname allowed is 255
   char qname[255];
   for(int i = 0; i < token_count; i++) {
-    // printf("%s", label_to_str(labels[i]));
     if (i == 0) {
       strcpy(qname, label_to_str(labels[i]));
     } else {
       strcat(qname, label_to_str(labels[i]));
     }
   }
-  printf("%s", qname);
 
   // UDP DNS lookups have a max size of 512 bytes
   struct header dns_header = build_dns_header();
-  struct question dns_question = build_dns_question(qname);
-  unsigned char buffer[512];
-  memcpy(buffer, &dns_header, sizeof (struct header));
-  int length = strlen((char *) dns_question.name);
-  memcpy(&buffer[sizeof (struct header)], dns_question.name, strlen((char *) dns_question.name));
-  memcpy(&buffer[sizeof (struct header) + length], &dns_question.qtype, sizeof dns_question.qtype);
-  memcpy(&buffer[sizeof (struct header) + length + sizeof dns_question.qtype], &dns_question.qclass, sizeof dns_question.qclass);
-  int bytes_sent = sendto(sock, (char *)buffer, strlen((char *)buffer), 0, (struct sockaddr*)&destination, sizeof destination);
+  struct question dns_question = build_dns_question();
+  char buffer[512];
+  char *buffer_ptr = buffer;
+  memcpy(buffer_ptr, &dns_header, sizeof (struct header));
+  buffer_ptr += sizeof (struct header);
+  memcpy(buffer_ptr, qname, strlen((char *) qname) + 1);
+  buffer_ptr += strlen((char *) qname) + 1;
+  memcpy(buffer_ptr, &dns_question, sizeof dns_question);
+  buffer_ptr += sizeof dns_question;
+  int bytes_sent = sendto(sock, buffer, buffer_ptr - buffer, 0, (struct sockaddr*)&destination, sizeof destination);
   if (bytes_sent < 0) {
     printf("\nError sending packet: %s\n", strerror(errno));
     exit(EXIT_FAILURE);
   }
 
-  int bytes_recv = recvfrom(sock, (char*) buffer, 512, 0, (struct sockaddr*)&destination, (socklen_t *) sizeof destination);
-  if(bytes_recv < 0) {
+  socklen_t socket_length = sizeof destination;
+  if(recvfrom(sock, buffer, buffer_ptr - buffer, 0, (struct sockaddr*)&destination, &socket_length) < 0) {
     printf("\nError receiving packet: %s\n", strerror(errno));
     exit(EXIT_FAILURE);
   }
-
-  struct header *dns_h = (struct header *) buffer;
-  // reader = &buffer[sizeof (DNS_MESSAGE.header) + (strlen((char *) qname)) + sizeof (DNS_MESSAGE.query)];
-  // printf("\nThe response contains : ");
-  // printf("\n %d Questions.",ntohs(dns_header->q_count));
-  // printf("\n %d Answers.",ntohs(dns_header->ans_count));
-  // printf("\n %d Authoritative Servers.",ntohs(dns_header->auth_count));
-  // printf("\n %d Additional records.\n\n",ntohs(dns_header->add_count));
 
   close(sock); /* close the socket */
   return 0;
